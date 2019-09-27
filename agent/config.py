@@ -35,6 +35,9 @@ Executes shellcode in a new thread.
 udpflood <ip> <port> <duration>
 Floods the target with random UDP packets.
 
+tcpflood <ip> <port> <duration>
+Floods the target with several TCP connections.
+
 exit
 Kills the agent.
 """

